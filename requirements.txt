@@ -1,0 +1,11 @@
+# 智能学生排座位系统 · 运行依赖
+# 安装： pip install -r requirements.txt
+#
+# 注意：tkinter 是 Python 官方安装包自带的图形库，不用 pip 安装。
+#       Windows 安装官方 Python 时勾选「tcl/tk and IDLE」即可。
+#       Linux 需额外安装系统包（Debian/Ubuntu: sudo apt install python3-tk）。
+pandas>=2.0
+openpyxl>=3.1
+xlrd>=2.0
+matplotlib>=3.7
+Pillow>=10.0

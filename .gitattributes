@@ -1,0 +1,16 @@
+# 源码 / 文档统一 LF
+*.py    text eol=lf
+*.md    text eol=lf
+*.yml   text eol=lf
+*.toml  text eol=lf
+
+# Windows 批处理与中文说明保持原始字节（GBK + CRLF / UTF-8 BOM），
+# 不要让 Git 做换行符转换，否则 cmd.exe 会解析出错、BOM 也可能被破坏。
+*.bat   -text
+*.txt   -text
+
+# 二进制资源不要做文本处理
+*.png   binary
+*.ico   binary
+*.jpg   binary
+*.xlsx  binary

@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "smart-seat-planner"
+version = "1.0.0"
+description = "面向中小学班主任的本地智能排座位桌面程序（tkinter，离线运行）"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "北离Beilies" }]
+keywords = ["classroom", "seating", "tkinter", "education", "excel"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Win32 (MS Windows)",
+    "Intended Audience :: Education",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Education",
+]
+dependencies = [
+    "pandas>=2.0",
+    "openpyxl>=3.1",
+    "xlrd>=2.0",
+    "matplotlib>=3.7",
+    "Pillow>=10.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0", "pyinstaller>=6.0", "ruff>=0.4"]
+
+[project.scripts]
+smart-seat-planner = "main:main"
+
+# 本项目是桌面程序：源码采用轻量 src/ 布局（模块平铺，入口 src/main.py），
+# 不发布到 PyPI；pip install -e . 主要用于开发时让模块可被引用。
+[tool.setuptools]
+package-dir = { "" = "src" }
+py-modules = [
+    "main", "app_paths", "models", "excel_io", "layout", "seating",
+    "evaluate", "exporter", "gui_main", "gui_dialogs", "selfcheck",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+exclude = ["docs/完整代码汇总.txt"]
