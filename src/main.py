@@ -44,6 +44,9 @@ if IS_FROZEN:
         sys.stderr = open(os.devnull, "w", encoding="utf-8")
 
 from app_paths import BASE_DIR, LOG_FILENAME
+# 必须尽早导入：Windows 高 DPI 屏幕上，声明进程级 DPI 感知要在创建任何窗口之前。
+# 否则系统会先把界面按 96 DPI 画成位图再放大，所有文字都会发虚。
+import ui_scale
 
 INSTALL_CMD = "pip install -r requirements.txt"
 LOG_FILE = os.path.join(BASE_DIR, LOG_FILENAME)
@@ -124,6 +127,8 @@ def diagnose() -> int:
     检查 ① 所有依赖能导入 ② 导入/排座/导出全链路能跑 ③ 真实创建主窗口。
     结果同时打印和写入「打包自检结果.txt」，返回 0 表示全部通过。
     """
+    tk_scaling = 0.0
+    chart_dpi = 0.0
     lines: list[str] = [
         "智能学生排座位系统 · 完整性自检",
         f"时间：{datetime.now():%Y-%m-%d %H:%M:%S}",
@@ -167,6 +172,10 @@ def diagnose() -> int:
                      "座位画布、控制面板、统计图表均已加载")
         lines.append(f"    [正常] 窗口标题：{app.title()}")
         lines.append(f"    [正常] 默认布局：{app.layout.summary()}")
+        tk_scaling = float(app.tk.call("tk", "scaling"))
+        chart_dpi = float(app.eval_panel.fig.dpi)
+        lines.append(f"    [正常] Tk 字体缩放 {tk_scaling:.3f}（点→像素），"
+                     f"评估图表渲染 DPI {chart_dpi:.0f}")
 
         # 回归检查：左侧控制面板的滚轮在按钮、右侧滚动条上都必须能滚动，
         # 滚轮不能误改「方案数量」，也不能把右侧座位画布的滚轮抢过来。
@@ -263,6 +272,43 @@ def diagnose() -> int:
                          f"（{size:,} 字节）")
             if not exists:
                 ok = False
+    except Exception:
+        lines.append(traceback.format_exc())
+        ok = False
+
+    lines.append("")
+    lines.append("【5】界面清晰度 / 高 DPI")
+    try:
+        from app_paths import OUTPUT_DIRNAME
+        from exporter import PNG_DPI
+        for line in ui_scale.describe():
+            lines.append("    " + line)
+        lines.append(f"    [正常] 座位图 PNG 输出分辨率：{PNG_DPI} DPI")
+        if PNG_DPI < 240:
+            lines.append("    [异常] PNG 输出 DPI 过低，打印会发虚")
+            ok = False
+        png_path = os.path.join(BASE_DIR, OUTPUT_DIRNAME, "示例_座位图.png")
+        if os.path.isfile(png_path):
+            from PIL import Image
+            with Image.open(png_path) as im:
+                w, h = im.size
+            lines.append(f"    [正常] 自检导出的座位图：{w} × {h} 像素")
+            if w < 1800:
+                lines.append("    [异常] 座位图像素宽度不足，打印会发虚")
+                ok = False
+        else:
+            lines.append("    [提示] 本次没有生成示例座位图，跳过像素尺寸检查")
+        if ui_scale.IS_WINDOWS and not ui_scale.DPI_AWARE:
+            lines.append("    [异常] 未声明 DPI 感知，Windows 会拉伸窗口使文字发糊")
+            ok = False
+        want_scaling = (96.0 / 72.0) * ui_scale.UI_SCALE
+        if tk_scaling < want_scaling - 0.05:
+            lines.append(f"    [异常] Tk 字体缩放 {tk_scaling:.3f} 低于目标 {want_scaling:.3f}")
+            ok = False
+        if chart_dpi < 130 * ui_scale.UI_SCALE - 1:
+            lines.append(f"    [异常] 评估图表渲染 DPI {chart_dpi:.0f} 偏低")
+            ok = False
+        lines.append("    [正常] 字体缩放、图表 DPI、PNG 分辨率均已按屏幕缩放提高")
     except Exception:
         lines.append(traceback.format_exc())
         ok = False

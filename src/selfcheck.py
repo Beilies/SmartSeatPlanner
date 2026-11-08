@@ -27,7 +27,7 @@ from models import COLOR
 from seating import SeatingOptions, generate_plans, apply_swap
 from evaluate import attach_stats
 from exporter import (export_seating_excel, export_canvas_png, export_report_xlsx,
-                      build_seat_figure, png_columns)
+                      build_seat_figure, png_columns, png_aisle_columns)
 
 
 def make_dirty_excel(path: str) -> None:
@@ -171,6 +171,15 @@ def main() -> int:
         assert os.path.isfile(p) and os.path.getsize(p) > 1000, f"导出文件异常：{p}"
         print(f"[7] 导出成功：{os.path.basename(p)}（{os.path.getsize(p):,} 字节）")
 
+    # 回归检查 ③：PNG 必须是打印级分辨率，不能退回 180 DPI 的糊图
+    from PIL import Image
+    from exporter import FIGURE_DPI, PNG_DPI
+    assert PNG_DPI >= 300 and FIGURE_DPI >= 200, "座位图渲染 / 输出 DPI 被调低了"
+    with Image.open(png) as im:
+        pw, ph = im.size
+    assert pw >= 1800, f"座位图像素宽度不足，打印会发虚：{pw} px"
+    print(f"[7b] PNG 分辨率：{pw} × {ph} 像素（画布 {FIGURE_DPI} / 输出 {PNG_DPI} DPI）")
+
     # 回归检查 ①：空位不能夹在学生中间。
     # 已入座座位必须恰好是「从前往后、从左到右」的前 N 个座位。
     seat_order = layout.seats()
@@ -181,10 +190,15 @@ def main() -> int:
     print("[8] 空位检查：所有方案的空位都集中在最后几排末尾，没有夹在学生中间")
 
     # 回归检查 ②：PNG 只含座位信息，且不给家长看老师内部标记。
-    # 过道列整列删除，所以文字数 = 1 讲台 + 排号 + 保留列里的座位数。
+    # 过道列按原始位置留出空白（不画框、不写字），所以文字数仍是
+    # 1 讲台 + 排号 + 座位数；同时要断言过道列真的没有任何方格 / 姓名。
+    import math
     import matplotlib.pyplot as plt
     from matplotlib.colors import to_rgba
     draw_cols = png_columns(layout)
+    aisle_cols = png_aisle_columns(layout)
+    assert len(draw_cols) == layout.cols, "PNG 又把过道列压缩掉了"
+    assert aisle_cols, "自检布局应至少有一条过道，无法验证留白"
     cells = sum(1 for r in range(layout.rows) for c in draw_cols
                 if layout.get(r, c) == SEAT)
     expected_texts = 1 + layout.rows + cells
@@ -193,6 +207,13 @@ def main() -> int:
     assert len(ax.texts) == expected_texts, (
         f"PNG 文字数量异常：应有 {expected_texts} 处，实际 {len(ax.texts)} 处")
     assert len(ax.patches) == 1 + cells, "PNG 多画了非座位方格（过道方框？）"
+    # patches[0] 是讲台横条，其余全部是座位方格；方格中心所在的列不能是过道列
+    seat_x = [math.floor(p.get_x() + p.get_width() / 2) for p in ax.patches[1:]]
+    assert all(x not in aisle_cols for x in seat_x), "过道列被画上了座位方格"
+    # 姓名 / 排号文字也一样；讲台横条上的「讲　台」两字居中，不计入
+    text_x = [math.floor(t.get_position()[0]) for t in ax.texts
+              if t.get_text() != "讲　台"]
+    assert all(x not in aisle_cols for x in text_x), "过道列被写上了文字"
     forbidden = ("过道", "图例", "浅红", "导出时间", "座位示意图", "前排",
                  "重点关注", "普通学生", "行×", "重点", "视力", "学困", "讲台格")
     extra = [t.get_text() for t in ax.texts
@@ -202,7 +223,8 @@ def main() -> int:
     assert not any(to_rgba(patch.get_facecolor()) == focus_rgba
                    for patch in ax.patches), "PNG 仍用浅红底泄露重点关注学生"
     plt.close(fig)
-    print(f"[9] PNG 内容检查：{cells} 个座位方格（过道列已整列删除）、"
+    print(f"[9] PNG 内容检查：{cells} 个座位方格（第 "
+          f"{'、'.join(str(c + 1) for c in aisle_cols)} 列过道整列留白）、"
           "无过道方框、无标题图例、无重点关注标记（颜色与文字都没有）")
 
     print("\n✅ 全部自检通过：导入容错、预览编辑、5 套差异化方案、评估、三种导出均正常。")

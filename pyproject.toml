@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "smart-seat-planner"
-version = "1.0.0"
+version = "1.0.1"
 description = "面向中小学班主任的本地智能排座位桌面程序（tkinter，离线运行）"
 readme = "README.md"
 requires-python = ">=3.10"

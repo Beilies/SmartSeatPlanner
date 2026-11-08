@@ -32,7 +32,7 @@ python -m PyInstaller --noconfirm --clean --onefile --windowed ^
   --name SmartSeatPlanner --icon "assets\app.ico" --distpath "release" ^
   --paths "src" ^
   --add-data "assets\app.ico;." --add-data "assets\app_logo.png;." ^
-  --hidden-import selfcheck --hidden-import app_paths ^
+  --hidden-import selfcheck --hidden-import app_paths --hidden-import ui_scale ^
   --hidden-import matplotlib.backends.backend_tkagg --hidden-import tkinter.ttk ^
   --collect-data matplotlib "src\main.py"
 

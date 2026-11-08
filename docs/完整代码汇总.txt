@@ -1,14 +1,14 @@
 ﻿智能学生排座位系统 · 完整代码汇总
 ==============================================================================
 作者：北离Beilies
-生成时间：2026-11-08 00:01
+生成时间：2026-11-08 08:05
 说明：本文件仅供阅读 / 备份使用，由 scripts/生成代码汇总.py 自动生成。
       老师使用请到 GitHub Releases 下载免安装 exe；源码方式请看 README.md。
       工程采用 src/ 布局，各模块职责见 docs/开发文档.md。
 
 
 ==============================================================================
-【文件 1/13】src/main.py　（330 行）
+【文件 1/14】src/main.py　（376 行）
 ==============================================================================
 # -*- coding: utf-8 -*-
 """
@@ -56,6 +56,9 @@ if IS_FROZEN:
         sys.stderr = open(os.devnull, "w", encoding="utf-8")
 
 from app_paths import BASE_DIR, LOG_FILENAME
+# 必须尽早导入：Windows 高 DPI 屏幕上，声明进程级 DPI 感知要在创建任何窗口之前。
+# 否则系统会先把界面按 96 DPI 画成位图再放大，所有文字都会发虚。
+import ui_scale
 
 INSTALL_CMD = "pip install -r requirements.txt"
 LOG_FILE = os.path.join(BASE_DIR, LOG_FILENAME)
@@ -136,6 +139,8 @@ def diagnose() -> int:
     检查 ① 所有依赖能导入 ② 导入/排座/导出全链路能跑 ③ 真实创建主窗口。
     结果同时打印和写入「打包自检结果.txt」，返回 0 表示全部通过。
     """
+    tk_scaling = 0.0
+    chart_dpi = 0.0
     lines: list[str] = [
         "智能学生排座位系统 · 完整性自检",
         f"时间：{datetime.now():%Y-%m-%d %H:%M:%S}",
@@ -179,6 +184,10 @@ def diagnose() -> int:
                      "座位画布、控制面板、统计图表均已加载")
         lines.append(f"    [正常] 窗口标题：{app.title()}")
         lines.append(f"    [正常] 默认布局：{app.layout.summary()}")
+        tk_scaling = float(app.tk.call("tk", "scaling"))
+        chart_dpi = float(app.eval_panel.fig.dpi)
+        lines.append(f"    [正常] Tk 字体缩放 {tk_scaling:.3f}（点→像素），"
+                     f"评估图表渲染 DPI {chart_dpi:.0f}")
 
         # 回归检查：左侧控制面板的滚轮在按钮、右侧滚动条上都必须能滚动，
         # 滚轮不能误改「方案数量」，也不能把右侧座位画布的滚轮抢过来。
@@ -279,6 +288,43 @@ def diagnose() -> int:
         lines.append(traceback.format_exc())
         ok = False
 
+    lines.append("")
+    lines.append("【5】界面清晰度 / 高 DPI")
+    try:
+        from app_paths import OUTPUT_DIRNAME
+        from exporter import PNG_DPI
+        for line in ui_scale.describe():
+            lines.append("    " + line)
+        lines.append(f"    [正常] 座位图 PNG 输出分辨率：{PNG_DPI} DPI")
+        if PNG_DPI < 240:
+            lines.append("    [异常] PNG 输出 DPI 过低，打印会发虚")
+            ok = False
+        png_path = os.path.join(BASE_DIR, OUTPUT_DIRNAME, "示例_座位图.png")
+        if os.path.isfile(png_path):
+            from PIL import Image
+            with Image.open(png_path) as im:
+                w, h = im.size
+            lines.append(f"    [正常] 自检导出的座位图：{w} × {h} 像素")
+            if w < 1800:
+                lines.append("    [异常] 座位图像素宽度不足，打印会发虚")
+                ok = False
+        else:
+            lines.append("    [提示] 本次没有生成示例座位图，跳过像素尺寸检查")
+        if ui_scale.IS_WINDOWS and not ui_scale.DPI_AWARE:
+            lines.append("    [异常] 未声明 DPI 感知，Windows 会拉伸窗口使文字发糊")
+            ok = False
+        want_scaling = (96.0 / 72.0) * ui_scale.UI_SCALE
+        if tk_scaling < want_scaling - 0.05:
+            lines.append(f"    [异常] Tk 字体缩放 {tk_scaling:.3f} 低于目标 {want_scaling:.3f}")
+            ok = False
+        if chart_dpi < 130 * ui_scale.UI_SCALE - 1:
+            lines.append(f"    [异常] 评估图表渲染 DPI {chart_dpi:.0f} 偏低")
+            ok = False
+        lines.append("    [正常] 字体缩放、图表 DPI、PNG 分辨率均已按屏幕缩放提高")
+    except Exception:
+        lines.append(traceback.format_exc())
+        ok = False
+
     lines += ["", "结论：" + ("全部通过，这个程序可以正常发放给老师使用。"
                             if ok else "发现问题，请把本文件发给技术人员。")]
     text = "\n".join(lines)
@@ -342,7 +388,7 @@ if __name__ == "__main__":
     main()
 
 ==============================================================================
-【文件 2/13】src/app_paths.py　（106 行）
+【文件 2/14】src/app_paths.py　（106 行）
 ==============================================================================
 # -*- coding: utf-8 -*-
 """
@@ -452,7 +498,178 @@ def asset_path(filename: str) -> str:
     return candidates[0]
 
 ==============================================================================
-【文件 3/13】src/models.py　（134 行）
+【文件 3/14】src/ui_scale.py　（167 行）
+==============================================================================
+# -*- coding: utf-8 -*-
+"""
+界面清晰度 / 高 DPI 适配（ui_scale.py）
+==================================================================
+Windows 在「显示缩放 125% / 150%」的笔记本上，会把没有声明 DPI 感知的
+程序先按 96 DPI 画成一张位图，再整体放大到屏幕上——于是按钮、文字、
+座位格全都发虚，看起来像「分辨率不够」。这是 tkinter 程序最常见的模糊原因，
+和屏幕本身的分辨率无关。
+
+本模块做三件事，且必须在「创建任何窗口之前」完成（模块导入时即执行）：
+  1. 声明进程级 DPI 感知（优先 Per-Monitor V2）：让系统按真实物理像素绘制，
+     文字交给 ClearType 直接渲染，不再经过位图拉伸。
+  2. 读出真实系统 DPI，算出统一缩放系数 UI_SCALE，并提供 px() 把设计稿里的
+     逻辑像素换成物理像素（面板宽度、格子大小、行高、弹窗尺寸…）。
+  3. apply_tk_scaling()：把 Tk 的「每点对应多少像素」从固定 96/72 提到
+     (96/72)×UI_SCALE，所有以「点」为单位的微软雅黑字体自动等比放大，
+     视觉大小和以前一致，但笔画是重新光栅化的，因而清晰锐利。
+
+老师如果想手动微调，可以设置环境变量 SEAT_UI_SCALE（例如 1.25 / 1.5），
+不设置就完全跟随 Windows 的显示缩放。非 Windows 平台静默按 1.0 处理。
+"""
+from __future__ import annotations
+
+import ctypes
+import os
+import sys
+
+IS_WINDOWS = sys.platform == "win32"
+MIN_SCALE, MAX_SCALE = 1.0, 2.0          # 太小看不清，太大会撑爆窗口
+
+DPI_AWARE = False                        # 是否不再被 Windows 整窗位图拉伸
+DPI_LEVEL = -1                           # -1 未感知 / 0 系统级 / 1 每显示器 / 2 V2
+DPI_MODE = ""                            # 感知模式，写进 --diagnose 报告
+SYSTEM_DPI = 96                          # 真实系统 DPI（感知声明后读取）
+UI_SCALE = 1.0                           # 界面统一缩放系数
+
+
+def _env_scale(fallback: float) -> float:
+    """允许用环境变量覆盖缩放（方便测试 / 老师手动微调），非法值自动忽略。"""
+    raw = os.environ.get("SEAT_UI_SCALE", "").strip()
+    try:
+        value = float(raw) if raw else fallback
+    except ValueError:
+        value = fallback
+    return min(MAX_SCALE, max(MIN_SCALE, value))
+
+
+def _awareness_level() -> int:
+    """读取当前线程 DPI 感知级别：-1 未感知 / 0 系统级 / 1 每显示器 / 2 V2。
+
+    ctypes 默认把返回值当 32 位 int，而 DPI_AWARENESS_CONTEXT 是 64 位句柄，
+    不显式声明 restype / argtypes 会被截断，导致级别永远读不出来。
+    """
+    try:
+        u = ctypes.windll.user32
+        u.GetThreadDpiAwarenessContext.restype = ctypes.c_void_p
+        u.GetAwarenessFromDpiAwarenessContext.argtypes = [ctypes.c_void_p]
+        u.GetAwarenessFromDpiAwarenessContext.restype = ctypes.c_int
+        ctx = u.GetThreadDpiAwarenessContext()
+        return int(u.GetAwarenessFromDpiAwarenessContext(ctx))
+    except Exception:
+        return -1
+
+
+def _init() -> None:
+    global DPI_AWARE, DPI_LEVEL, DPI_MODE, SYSTEM_DPI, UI_SCALE
+    if not IS_WINDOWS:
+        DPI_MODE = "非 Windows 平台，按 100% 缩放"
+        UI_SCALE = _env_scale(1.0)
+        return
+
+    u = ctypes.windll.user32
+    # ① Win10 1703+ 最佳：Per-Monitor V2，跨不同缩放的显示器也清晰
+    try:
+        # -4 = DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2（必须按指针传，不能按 int）
+        u.SetProcessDpiAwarenessContext.argtypes = [ctypes.c_void_p]
+        u.SetProcessDpiAwarenessContext.restype = ctypes.c_int
+        u.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
+    except Exception:
+        pass
+    level = _awareness_level()
+    # ② 旧版 Win8.1 / Win10：shcore 的 Per-Monitor Aware
+    if level < 1:
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(2)
+        except Exception:
+            pass
+        level = _awareness_level()
+    # ③ Vista 之后都有的系统级 DPI 感知（单显示器够用）
+    if level < 0:
+        try:
+            u.SetProcessDPIAware()
+        except Exception:
+            pass
+        level = _awareness_level()
+
+    # 0「系统级」及以上都不会被 Windows 整窗拉伸；只有 -1 会糊。
+    # PyInstaller 生成的 exe 可能自带 dpiAware manifest，此时 API 调用会
+    # 返回「已设置」，但 level 已经是 0/2，同样算生效，不能误报失败。
+    DPI_LEVEL = level
+    DPI_AWARE = level >= 0
+    DPI_MODE = {2: "Per-Monitor V2（最佳）", 1: "Per-Monitor Aware",
+                0: "System DPI Aware（exe 自带清单）",
+                -1: "未启用（系统仍会拉伸窗口）"}.get(level, f"级别 {level}")
+
+    # 声明感知之后读 DPI 才是真实值；未声明时 Windows 会骗我们说永远是 96
+    try:
+        SYSTEM_DPI = int(u.GetDpiForSystem())
+    except Exception:
+        try:
+            hdc = u.GetDC(0)
+            SYSTEM_DPI = int(ctypes.windll.gdi32.GetDeviceCaps(hdc, 88))  # LOGPIXELSX
+            u.ReleaseDC(0, hdc)
+        except Exception:
+            SYSTEM_DPI = 96
+    SYSTEM_DPI = max(72, min(288, SYSTEM_DPI))
+    UI_SCALE = _env_scale(SYSTEM_DPI / 96.0)
+
+
+_init()                                   # import 即生效，早于任何 tk.Tk()
+
+
+def px(value: float) -> int:
+    """设计稿里的逻辑像素 → 当前屏幕的物理像素（用于宽度 / 行高 / 间距）。"""
+    return max(1, int(round(value * UI_SCALE)))
+
+
+def apply_tk_scaling(root) -> float:
+    """在创建任何控件之前调用：让 Tk 按真实 DPI 重新光栅化所有点数字体。"""
+    target = (96.0 / 72.0) * UI_SCALE
+    try:
+        root.tk.call("tk", "scaling", target)
+        return float(root.tk.call("tk", "scaling"))
+    except Exception:
+        return 96.0 / 72.0
+
+
+def window_size(root, base_w: int, base_h: int):
+    """主窗口按缩放放大，但不超出屏幕（笔记本 / 投影仪也不会被裁掉）。"""
+    try:
+        sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
+    except Exception:
+        sw, sh = 1920, 1080
+    w = min(px(base_w), max(720, int(sw * 0.94)))
+    h = min(px(base_h), max(520, int(sh * 0.92)))
+    return w, h
+
+
+def minimum_size(root, base_w: int, base_h: int):
+    """最小窗口同样按缩放放大，但保证不超过屏幕的 80%。"""
+    try:
+        sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
+    except Exception:
+        sw, sh = 1920, 1080
+    return (min(px(base_w), max(640, int(sw * 0.80))),
+            min(px(base_h), max(480, int(sh * 0.80))))
+
+
+def describe() -> list[str]:
+    """给 --diagnose 用的中文说明，方便老师/开发者确认清晰度设置生效。"""
+    return [
+        f"DPI 感知：{DPI_MODE}（已生效：{'是' if DPI_AWARE else '否'}）",
+        f"系统 DPI：{SYSTEM_DPI}（Windows 显示缩放约 {SYSTEM_DPI / 96 * 100:.0f}%）",
+        f"界面缩放系数：{UI_SCALE:.2f}×；Tk 字体按 (96/72)×缩放重新渲染",
+        "字体：全界面统一「微软雅黑」，正文基础字号由 10pt 提到 11pt",
+        "座位图 PNG：300 DPI 输出；评估柱状图：按屏幕缩放后的高 DPI 渲染",
+    ]
+
+==============================================================================
+【文件 4/14】src/models.py　（134 行）
 ==============================================================================
 # -*- coding: utf-8 -*-
 """
@@ -590,7 +807,7 @@ class Student:
         return hash((self.sid, self.name, self.source_row))
 
 ==============================================================================
-【文件 4/13】src/excel_io.py　（593 行）
+【文件 5/14】src/excel_io.py　（593 行）
 ==============================================================================
 # -*- coding: utf-8 -*-
 """
@@ -1187,7 +1404,7 @@ def download_template(path: str) -> str:
         raise ExcelParseError(f"生成模板失败：{_brief(exc)}")
 
 ==============================================================================
-【文件 5/13】src/layout.py　（281 行）
+【文件 6/14】src/layout.py　（281 行）
 ==============================================================================
 # -*- coding: utf-8 -*-
 """
@@ -1472,7 +1689,7 @@ class ClassroomLayout:
         return (cleaned or "我的教室")[:40]
 
 ==============================================================================
-【文件 6/13】src/seating.py　（554 行）
+【文件 7/14】src/seating.py　（554 行）
 ==============================================================================
 # -*- coding: utf-8 -*-
 """
@@ -2030,7 +2247,7 @@ def apply_swap(plan: Plan, a: Pos, b: Pos) -> None:
     plan.stats = None      # 统计失效，界面会重新计算
 
 ==============================================================================
-【文件 7/13】src/evaluate.py　（164 行）
+【文件 8/14】src/evaluate.py　（164 行）
 ==============================================================================
 # -*- coding: utf-8 -*-
 """
@@ -2198,7 +2415,7 @@ def compare_rows(plans: List[Plan]) -> Tuple[List[str], List[list]]:
     return columns, rows
 
 ==============================================================================
-【文件 8/13】src/exporter.py　（385 行）
+【文件 9/14】src/exporter.py　（406 行）
 ==============================================================================
 # -*- coding: utf-8 -*-
 """
@@ -2206,7 +2423,8 @@ def compare_rows(plans: List[Plan]) -> Tuple[List[str], List[list]]:
 ------------------------------------------------------------------
 1. 导出 Excel 座位表：名单 Sheet + 座位示意图 Sheet（带颜色，可直接打印）
 2. 导出座位画布为 PNG 图片：用 matplotlib 重绘，只含座位信息（讲台 / 排号 / 座位方格），
-   不含标题、图例、行列数、导出时间、特殊标记小字等任何附加说明，方便直接打印 / 发家长群
+   不含标题、图例、行列数、导出时间、特殊标记小字等任何附加说明；
+   过道按原始位置留白（不画方框、不写字），方便直接打印 / 发家长群
 3. 导出方案统计报表：多方案横向对比 + 分区分布 + 提示与冲突
 
 所有函数失败时抛 ExportError，由 GUI 转成中文弹窗。
@@ -2237,6 +2455,12 @@ class ExportError(Exception):
     """导出失败（权限、文件被占用、缺字体等），GUI 会友好提示。"""
 
 
+# 座位图是给家长看 / 打印张贴的，光栅化分辨率不能省：
+# 180 DPI 放大到 A4 时笔画会发虚，统一按 300 DPI 输出。
+FIGURE_DPI = 200                  # 画布内部渲染分辨率
+PNG_DPI = 300                     # savefig 输出分辨率（打印级）
+
+
 # ----------------------------------------------------------------------
 # 中文字体（Windows 一般有微软雅黑 / 黑体；找不到时降级，不会崩溃）
 # ----------------------------------------------------------------------
@@ -2252,6 +2476,10 @@ def setup_chinese_font() -> str:
     chosen = next((n for n in candidates if n in available), "DejaVu Sans")
     plt.rcParams["font.sans-serif"] = [chosen, "DejaVu Sans"]
     plt.rcParams["axes.unicode_minus"] = False
+    # 高分辨率渲染 + 字体抗锯齿：文字笔画不再是一圈糊边
+    plt.rcParams["figure.dpi"] = FIGURE_DPI
+    plt.rcParams["savefig.dpi"] = PNG_DPI
+    plt.rcParams["text.antialiased"] = True
     return chosen
 
 
@@ -2415,20 +2643,27 @@ def export_seating_excel(path: str, plan: Plan, layout: ClassroomLayout,
 #   · 学生姓名方格，以及末尾几个「空位」方格
 # 刻意不画的「其它信息」：
 #   · 方案标题、颜色图例、行列数、前排说明、导出时间
-#   · 过道 / 讲台格：整列删掉，不画灰色方框、不写「过道」、也不留空白列
+#   · 过道 / 禁用格：按原始列位置空出来（不画灰色方框、不写「过道」），
+#     座位之间自然出现空白纵向通道，家长一眼能看出教室的真实布局
 #   · 老师对学生的重点关照信息：不写「重点关注 / 视力 / 学困」等小字，
 #     也不再用浅红底色区分——所有学生方格一律白色，家长看到的是同一张表
 # 【注意】主界面画布仍保留浅红标记与灰色过道（老师排座时需要看），
 #         只在这个「对外导出」的函数里做脱敏与简化；Excel 座位表也仍保留教师信息。
 # ----------------------------------------------------------------------
 def png_columns(layout: ClassroomLayout) -> List[int]:
-    """返回 PNG 要画的原始列号：整列都是过道/讲台的列直接删掉。
+    """返回 PNG 网格保留的原始列号：**全部列，含过道列**。
 
-    以「列」为单位压缩而不是逐格压缩，保证每一行仍然对齐；
-    个别行里的过道格（其所在列其它行仍有座位）跳过不画即可。
+    早期版本会把整列过道压缩删掉，结果三段座位紧挨在一起、看不出通道；
+    现在按原始列号排布，过道列照常占一格宽度但完全留白（画座位时跳过非 SEAT 格），
+    既不留灰色方框，也不会把教室布局挤变形。
     """
+    return list(range(layout.cols))
+
+
+def png_aisle_columns(layout: ClassroomLayout) -> List[int]:
+    """返回 PNG 中应当整列留白的原始列号（自检 / 测试用它做回归断言）。"""
     return [c for c in range(layout.cols)
-            if any(layout.get(r, c) == SEAT for r in range(layout.rows))]
+            if all(layout.get(r, c) != SEAT for r in range(layout.rows))]
 
 
 def build_seat_figure(plan: Plan, layout: ClassroomLayout):
@@ -2440,10 +2675,10 @@ def build_seat_figure(plan: Plan, layout: ClassroomLayout):
     rows = layout.rows
     draw_cols = png_columns(layout)
     out_cols = max(1, len(draw_cols))              # 极端容错：全无座位也不让坐标崩
-    # 没有标题、页脚、过道列了，画布按实际网格收紧，避免大片空白
+    # 没有标题、页脚，画布按实际网格收紧；过道列也算进宽度，用来留白
     fig_w = max(8.0, out_cols * 1.18 + 0.9)
     fig_h = max(4.0, rows * 0.78 + 1.15)
-    fig, ax = plt.subplots(figsize=(fig_w, fig_h), dpi=180)
+    fig, ax = plt.subplots(figsize=(fig_w, fig_h), dpi=FIGURE_DPI)
     fig.patch.set_facecolor("white")
     # 坐标紧贴内容：左边留一点给排号，上边留给讲台，下边不再留页脚空间
     ax.set_xlim(-0.60, out_cols + 0.10)
@@ -2452,13 +2687,16 @@ def build_seat_figure(plan: Plan, layout: ClassroomLayout):
     ax.axis("off")
     fig.subplots_adjust(left=0.01, right=0.99, bottom=0.01, top=0.99)
 
-    # 讲台横条（属于座位方位信息，保留），居中于压缩后的座位网格
+    # 讲台横条（属于座位方位信息，保留），居中于整个座位网格
     ax.add_patch(Rectangle((out_cols / 2 - 1.35, rows + 0.32), 2.7, 0.6,
                           facecolor=COLOR["podium"], edgecolor=COLOR["podium"]))
     ax.text(out_cols / 2, rows + 0.62, "讲　台", ha="center", va="center",
             fontsize=13, color="white", fontweight="bold")
 
-    name_size = 11 if out_cols <= 10 else 9
+    # 字号按「一行实际有多少个座位」决定，过道列变多也不该把姓名挤小
+    seat_per_row = max((sum(1 for c in draw_cols if layout.get(r, c) == SEAT)
+                        for r in range(rows)), default=1)
+    name_size = 11 if seat_per_row <= 10 else 9
     for r in range(rows):
         y = rows - 1 - r                           # 第 0 排画在最上方
         # 排号：帮助老师/家长定位第几排，属于座位信息
@@ -2466,7 +2704,7 @@ def build_seat_figure(plan: Plan, layout: ClassroomLayout):
                 fontsize=9, color=COLOR["subtext"])
         for x, c in enumerate(draw_cols):
             if layout.get(r, c) != SEAT:
-                continue                           # 过道 / 讲台格：不画框、不写字
+                continue                           # 过道 / 禁用格：整格留白，不画框、不写字
             stu = plan.assignment.get((r, c))
             if stu is None:
                 fill, border = COLOR["empty"], COLOR["empty_border"]
@@ -2492,7 +2730,7 @@ def export_canvas_png(path: str, plan: Plan, layout: ClassroomLayout) -> str:
         if folder:
             os.makedirs(folder, exist_ok=True)
         # tight + 很小的留白：图片边缘干净，打印不会被裁到字
-        fig.savefig(path, dpi=180, bbox_inches="tight", pad_inches=0.06,
+        fig.savefig(path, dpi=PNG_DPI, bbox_inches="tight", pad_inches=0.06,
                     facecolor="white")
         plt.close(fig)
         return path
@@ -2587,7 +2825,7 @@ def export_report_xlsx(path: str, plans: List[Plan], layout: ClassroomLayout,
         raise ExportError(f"导出统计报表失败：{str(exc)[:100]}")
 
 ==============================================================================
-【文件 9/13】src/gui_main.py　（959 行）
+【文件 10/14】src/gui_main.py　（969 行）
 ==============================================================================
 # -*- coding: utf-8 -*-
 """
@@ -2625,6 +2863,7 @@ from models import COLOR, Student, WarningItem
 from seating import (Plan, SeatingOptions, apply_swap, generate_plans)
 
 from app_paths import BASE_DIR, asset_path
+from ui_scale import apply_tk_scaling, minimum_size, px, window_size
 
 
 # ======================================================================
@@ -2633,7 +2872,9 @@ from app_paths import BASE_DIR, asset_path
 class SeatBoard(ttk.Frame):
     """彩色方格座位图：悬浮提示、拖拽换座、撤销、缩放。"""
 
-    BASE_W, BASE_H = 118, 66
+    # 设计稿是 96 DPI 下的逻辑像素；高 DPI 屏按系统缩放放大，
+    # 否则字体被 Tk 放大后，格子还是原来那么大，姓名会挤成一团。
+    BASE_W, BASE_H = px(118), px(66)
 
     def __init__(self, master, on_change=None, on_status=None):
         super().__init__(master)
@@ -2647,7 +2888,7 @@ class SeatBoard(ttk.Frame):
         self.drag: Optional[dict] = None
         self.hover_pos: Optional[Pos] = None
         self.tip_job: Optional[str] = None
-        self.pad = 16
+        self.pad = px(16)
 
         # ---- 工具栏 ----
         bar = ttk.Frame(self)
@@ -2687,7 +2928,7 @@ class SeatBoard(ttk.Frame):
         self.tip.wm_overrideredirect(True)
         self.tip.withdraw()
         self.tip_label = tk.Label(self.tip, justify=tk.LEFT, anchor="w",
-                                  font=("微软雅黑", 10), bg="#FFFDF0", fg=COLOR["text"],
+                                  font=("微软雅黑", 11), bg="#FFFDF0", fg=COLOR["text"],
                                   relief=tk.SOLID, bd=1, padx=10, pady=7)
         self.tip_label.pack()
         self.menu = tk.Menu(self, tearoff=0)
@@ -2732,9 +2973,9 @@ class SeatBoard(ttk.Frame):
                                          "③ 调好参数，点「生成座位方案」，这里就会出现彩色座位图\n"
                                          "④ 直接拖动方格换座，下方图表会实时更新\n\n"
                                          "浅红=重点关注　白色=普通学生　灰色=过道/禁用",
-                                    font=("微软雅黑", 13), fill=COLOR["subtext"],
+                                    font=("微软雅黑", 14), fill=COLOR["subtext"],
                                     justify=tk.LEFT)
-            self.canvas.configure(scrollregion=(0, 0, 900, 500))
+            self.canvas.configure(scrollregion=(0, 0, px(900), px(500)))
             return
 
         # 讲台横条
@@ -2743,11 +2984,11 @@ class SeatBoard(ttk.Frame):
                                      fill=COLOR["podium"], outline=COLOR["podium"])
         self.canvas.create_text(pad + w * cols / 2, pad + h * 0.37,
                                 text="讲　台　（前方）", fill="white",
-                                font=("微软雅黑", max(9, int(11 * self.scale)), "bold"))
+                                font=("微软雅黑", max(10, int(12 * self.scale)), "bold"))
 
-        name_font = ("微软雅黑", max(8, int(11 * self.scale)), "bold")
-        tag_font = ("微软雅黑", max(7, int(9 * self.scale)))
-        small_font = ("微软雅黑", max(7, int(9 * self.scale)))
+        name_font = ("微软雅黑", max(9, int(12 * self.scale)), "bold")
+        tag_font = ("微软雅黑", max(8, int(10 * self.scale)))
+        small_font = ("微软雅黑", max(8, int(10 * self.scale)))
 
         for r in range(rows):
             y0 = pad + (r + 1) * h
@@ -2889,7 +3130,7 @@ class SeatBoard(ttk.Frame):
                                      fill=COLOR["ghost"], outline="#C79A20",
                                      width=2, tags="ghost")
         self.canvas.create_text(x, y, text=stu.name if stu else "空位",
-                                font=("微软雅黑", max(8, int(10 * self.scale)), "bold"),
+                                font=("微软雅黑", max(9, int(11 * self.scale)), "bold"),
                                 fill=COLOR["text"], tags="ghost")
         # 高亮即将放下的目标格
         target = self._pos_at(event.x, event.y)
@@ -2999,9 +3240,15 @@ class MainWindow(tk.Tk):
 
     def __init__(self):
         super().__init__()
+        # 必须在创建任何控件之前：Tk 会按真实 DPI 重新光栅化所有点数字体，
+        # 文字不再是「96 DPI 位图被 Windows 拉伸」的模糊效果。
+        apply_tk_scaling(self)
         self.title("智能学生排座位系统　｜　made by Beilies")
-        self.geometry("1380x880")
-        self.minsize(1080, 680)
+        w, h = window_size(self, 1380, 880)
+        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+        x, y = max(0, (sw - w) // 2 - 20), max(0, (sh - h) // 2 - 40)
+        self.geometry(f"{w}x{h}+{x}+{y}")
+        self.minsize(*minimum_size(self, 1080, 680))
         setup_style(self)
         self._setup_icon()          # 老师设计的图标：标题栏 / 任务栏 / 面板左上角
         self.report_callback_exception = self._tk_exception
@@ -3065,19 +3312,19 @@ class MainWindow(tk.Tk):
     # ------------------------------------------------------------------
     def _build_left(self) -> None:
         """左侧控制面板（可滚动，小窗口也不会挤掉按钮）。"""
-        outer = ttk.Frame(self, width=326)
-        outer.grid(row=0, column=0, sticky="nsew", padx=(8, 4), pady=8)
+        outer = ttk.Frame(self, width=px(326))
+        outer.grid(row=0, column=0, sticky="nsew", padx=(px(8), px(4)), pady=px(8))
         outer.pack_propagate(False)
-        # 把「滚一格」固定成 20 像素：Tk 默认一格 = 窗口高度的 1/10，
-        # 大屏上一滚就跳一大截，小屏上又几乎不动，手感很差。
-        canvas = tk.Canvas(outer, highlightthickness=0, width=310,
-                           yscrollincrement=20)
+        # 把「滚一格」固定成 20 逻辑像素（高 DPI 下同步放大）：Tk 默认一格 =
+        # 窗口高度的 1/10，大屏上一滚就跳一大截，小屏上又几乎不动。
+        canvas = tk.Canvas(outer, highlightthickness=0, width=px(310),
+                           yscrollincrement=px(20))
         scroll = ttk.Scrollbar(outer, orient=tk.VERTICAL, command=canvas.yview)
         canvas.configure(yscrollcommand=scroll.set)
         canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scroll.pack(side=tk.RIGHT, fill=tk.Y)
         panel = ttk.Frame(canvas)
-        canvas.create_window((0, 0), window=panel, anchor="nw", width=306)
+        canvas.create_window((0, 0), window=panel, anchor="nw", width=px(306))
         panel.bind("<Configure>",
                    lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
         # 供滚轮绑定和 --diagnose 回归检查使用
@@ -3094,8 +3341,8 @@ class MainWindow(tk.Tk):
                   style="Title.TLabel").pack(side=tk.LEFT)
         # 给老师一句明确提示：这块面板是可以往下滚的
         ttk.Label(panel, text="鼠标滚轮可上下滚动本面板",
-                  style="Hint.TLabel", wraplength=270).pack(anchor="w", pady=(0, 6))
-        self.columnconfigure(0, weight=0, minsize=330)
+                  style="Hint.TLabel", wraplength=px(270)).pack(anchor="w", pady=(0, 6))
+        self.columnconfigure(0, weight=0, minsize=px(330))
         self.rowconfigure(0, weight=1)
         self.columnconfigure(1, weight=1)
 
@@ -3107,7 +3354,7 @@ class MainWindow(tk.Tk):
         ttk.Button(box, text="下载标准 Excel 模板",
                    command=self._download_template).pack(fill=tk.X, pady=2)
         ttk.Label(box, textvariable=self.var_students, style="Hint.TLabel",
-                  wraplength=270).pack(anchor="w", pady=(4, 0))
+                  wraplength=px(270)).pack(anchor="w", pady=(4, 0))
 
         # ② 教室布局
         box = ttk.LabelFrame(panel, text="② 教室布局", style="Card.TLabelframe")
@@ -3115,7 +3362,7 @@ class MainWindow(tk.Tk):
         ttk.Button(box, text="打开可视化布局编辑器",
                    command=self._open_layout).pack(fill=tk.X, pady=2)
         ttk.Label(box, textvariable=self.var_layout, style="Hint.TLabel",
-                  wraplength=270).pack(anchor="w", pady=(4, 0))
+                  wraplength=px(270)).pack(anchor="w", pady=(4, 0))
 
         # ③ 排座参数
         box = ttk.LabelFrame(panel, text="③ 排座参数", style="Card.TLabelframe")
@@ -3153,7 +3400,7 @@ class MainWindow(tk.Tk):
         ttk.Button(nav, text="← 上一套", command=self._prev_plan).pack(side=tk.LEFT, expand=True, fill=tk.X)
         ttk.Button(nav, text="下一套 →", command=self._next_plan).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=4)
         ttk.Label(box, textvariable=self.var_desc, style="Hint.TLabel",
-                  wraplength=270).pack(anchor="w", pady=(6, 0))
+                  wraplength=px(270)).pack(anchor="w", pady=(6, 0))
 
         # ⑤ 导出
         box = ttk.LabelFrame(panel, text="⑤ 导出", style="Card.TLabelframe")
@@ -3177,7 +3424,7 @@ class MainWindow(tk.Tk):
 
         # 状态栏
         ttk.Label(panel, textvariable=self.var_status, style="Hint.TLabel",
-                  wraplength=270, foreground="#24527A").pack(anchor="w", pady=(10, 4))
+                  wraplength=px(270), foreground="#24527A").pack(anchor="w", pady=(10, 4))
 
         # 所有子控件都建好之后，再统一绑定滚轮（详见方法内说明）
         self._bind_panel_wheel()
@@ -3483,8 +3730,8 @@ class MainWindow(tk.Tk):
             return
         saved = export_canvas_png(path, plan, self.layout)
         messagebox.showinfo("导出成功", f"座位图已保存为图片：\n{saved}\n\n"
-                            "图片只含讲台、排号和姓名方格：过道方框已去掉，"
-                            "也不含重点关注标记、标题、图例、导出时间，"
+                            "图片只含讲台、排号和姓名方格：过道位置已留出空白，"
+                            "不画过道方框，也不含重点关注标记、标题、图例、导出时间，"
                             "可直接发家长群或打印张贴。",
                             parent=self)
         self.set_status(f"已导出 PNG 座位图：{os.path.basename(saved)}")
@@ -3539,8 +3786,9 @@ class MainWindow(tk.Tk):
             "调座位：直接用鼠标左键把学生方格拖到另一个方格（或空位）即可交换；Ctrl+Z 或"
             "「撤销换座」按钮可悔棋；鼠标悬浮可看学号、总分、标签、禁止同桌对象；Ctrl+滚轮缩放。",
             "导出：Excel 座位表（名单 + 彩色座位示意图）、PNG 座位图、方案统计报表。"
-            "PNG 是给家长看的：只画讲台、排号和姓名方格，过道方框整列删除，"
-            "不显示重点关注标记（浅红底色也不显示），空位统一留在最后几排；"
+            "PNG 是给家长看的：只画讲台、排号和姓名方格，过道按原位置留白"
+            "（不画方框、不写「过道」），不显示重点关注标记（浅红底色也不显示），"
+            "空位统一留在最后几排；"
             "老师自己在主界面画布上仍能看到浅红标记和灰色过道。",
             "依赖：Python 官方安装包自带 tkinter；另需 pandas、openpyxl、xlrd、matplotlib，"
             "安装命令见根目录 requirements.txt；完整教程在 docs/使用说明.md。",
@@ -3550,7 +3798,7 @@ class MainWindow(tk.Tk):
                        subtitle="面向老师的六步流程（不需要联网、不需要登录）：")
 
 ==============================================================================
-【文件 10/13】src/gui_dialogs.py　（832 行）
+【文件 11/14】src/gui_dialogs.py　（850 行）
 ==============================================================================
 # -*- coding: utf-8 -*-
 """
@@ -3592,6 +3840,7 @@ from models import COLOR, WarningItem, Student
 from seating import Plan
 
 from app_paths import BASE_DIR, LOG_FILENAME
+from ui_scale import px
 LOG_FILE = os.path.join(BASE_DIR, LOG_FILENAME)
 
 
@@ -3599,20 +3848,26 @@ LOG_FILE = os.path.join(BASE_DIR, LOG_FILENAME)
 # 通用工具
 # ----------------------------------------------------------------------
 def setup_style(root: tk.Misc) -> None:
-    """统一窗口外观（浅色主题、微软雅黑、稍大的控件间距）。"""
+    """统一窗口外观（浅色主题、微软雅黑、稍大的控件间距与字号）。
+
+    字号用「点」：Tk 已按真实 DPI 设置 scaling，11pt 在 150% 屏上会自动
+    变成约 22 物理像素，笔画重新光栅化，不会是拉伸后的模糊字。
+    行高 / 内边距用「像素」，必须用 px() 同步放大，否则字大框小。
+    基础字号整体提了 1pt（10→11、9→10），100% DPI 的屏幕也更清楚。
+    """
     try:
         style = ttk.Style(root)
         if "clam" in style.theme_names():
             style.theme_use("clam")
-        style.configure(".", font=("微软雅黑", 10))
-        style.configure("TButton", padding=(8, 5), font=("微软雅黑", 10))
-        style.configure("Title.TLabel", font=("微软雅黑", 12, "bold"), foreground="#1F2933")
-        style.configure("Hint.TLabel", font=("微软雅黑", 9), foreground=COLOR["subtext"])
-        style.configure("Card.TLabelframe", padding=8)
-        style.configure("Card.TLabelframe.Label", font=("微软雅黑", 10, "bold"),
+        style.configure(".", font=("微软雅黑", 11))
+        style.configure("TButton", padding=(px(9), px(6)), font=("微软雅黑", 11))
+        style.configure("Title.TLabel", font=("微软雅黑", 13, "bold"), foreground="#1F2933")
+        style.configure("Hint.TLabel", font=("微软雅黑", 11), foreground=COLOR["subtext"])
+        style.configure("Card.TLabelframe", padding=px(8))
+        style.configure("Card.TLabelframe.Label", font=("微软雅黑", 11, "bold"),
                         foreground="#2C5282")
-        style.configure("Treeview", rowheight=25, font=("微软雅黑", 10))
-        style.configure("Treeview.Heading", font=("微软雅黑", 10, "bold"))
+        style.configure("Treeview", rowheight=px(28), font=("微软雅黑", 11))
+        style.configure("Treeview.Heading", font=("微软雅黑", 11, "bold"))
         style.configure("Accent.TButton", foreground="#FFFFFF", background="#4472C4")
         style.map("Accent.TButton", background=[("active", "#3559A0")])
     except Exception:
@@ -3633,11 +3888,15 @@ def fit_dialog(win, pref_w: int, pref_h: int,
     不足时会被裁掉。所以调用方必须先 pack(side=tk.BOTTOM) 按钮区，
     再 pack 可伸缩的表格/画布，让空间不够时优先压缩内容区而不是按钮。
     """
+    # 设计稿按 96 DPI 写死，高 DPI 屏上要同步放大；否则按钮文字变大了、
+    # 窗口却还是原来那么小，底部确认按钮又会被挤出去。
+    pref_w, pref_h = px(pref_w), px(pref_h)
+    min_w, min_h = px(min_w), px(min_h)
     try:
         win.update_idletasks()
         sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
-        avail_w = max(560, sw - 80)       # 左右留边
-        avail_h = max(340, sh - 100)      # 上下留任务栏 / 标题栏 / 边框
+        avail_w = max(px(560), sw - px(80))       # 左右留边
+        avail_h = max(px(340), sh - px(100))      # 上下留任务栏 / 标题栏 / 边框
         w = min(pref_w, avail_w)
         h = min(pref_h, avail_h)
         win.minsize(min(min_w, avail_w), min(min_h, avail_h))
@@ -3710,7 +3969,7 @@ def show_info_list(parent, title: str, lines: List[str], subtitle: str = "") -> 
         side=tk.TOP, padx=14, pady=(12, 6), anchor="w")
     frame = ttk.Frame(win)
     frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=14, pady=6)
-    text = tk.Text(frame, wrap=tk.WORD, font=("微软雅黑", 10), bg="#FBFCFD",
+    text = tk.Text(frame, wrap=tk.WORD, font=("微软雅黑", 11), bg="#FBFCFD",
                    relief=tk.FLAT, padx=8, pady=8)
     sb = ttk.Scrollbar(frame, orient=tk.VERTICAL, command=text.yview)
     text.configure(yscrollcommand=sb.set)
@@ -3747,7 +4006,7 @@ class SheetChoiceDialog(tk.Toplevel):
         ttk.Label(self, text="这个 Excel 里有多个工作表，请选择要导入的那一个：",
                   style="Title.TLabel").pack(side=tk.TOP, padx=16, pady=(14, 8), anchor="w")
         self.listbox = tk.Listbox(self, height=min(10, max(4, len(sheets))),
-                                  font=("微软雅黑", 11), activestyle="dotbox")
+                                  font=("微软雅黑", 12), activestyle="dotbox")
         for s in sheets:
             self.listbox.insert(tk.END, s)
         self.listbox.selection_set(0)
@@ -3819,7 +4078,7 @@ class EditableTable(ttk.Frame):
         x, y, w, h = self.tree.bbox(row_id, col_id)
         column_key = self.columns[idx]
         value = self.tree.set(row_id, column_key)
-        editor = ttk.Entry(self.tree, font=("微软雅黑", 10))
+        editor = ttk.Entry(self.tree, font=("微软雅黑", 11))
         editor.place(x=x, y=y, width=w, height=h)
         editor.insert(0, value)
         editor.select_range(0, tk.END)
@@ -3920,8 +4179,8 @@ class ImportPreviewDialog(tk.Toplevel):
                                       show="headings", height=5)
         self.warn_tree.heading("kind", text="类别")
         self.warn_tree.heading("detail", text="说明")
-        self.warn_tree.column("kind", width=110, anchor=tk.CENTER, stretch=False)
-        self.warn_tree.column("detail", width=700, anchor=tk.W)
+        self.warn_tree.column("kind", width=px(110), anchor=tk.CENTER, stretch=False)
+        self.warn_tree.column("detail", width=px(700), anchor=tk.W)
         warn_scroll = ttk.Scrollbar(warn_box, orient=tk.VERTICAL, command=self.warn_tree.yview)
         self.warn_tree.configure(yscrollcommand=warn_scroll.set)
         self.warn_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(4, 0), pady=4)
@@ -4025,7 +4284,7 @@ class LayoutEditorDialog(tk.Toplevel):
         self.layout = ClassroomLayout.from_dict(layout.to_dict())
         self.brush = tk.StringVar(value=SEAT)
         self.zoom = tk.DoubleVar(value=1.0)
-        self.cell_w, self.cell_h = 72, 48
+        self.cell_w, self.cell_h = px(72), px(48)
         self.drag_start: Optional[tuple] = None
         self.drag_button = 1
         self.drag_moved = False
@@ -4116,13 +4375,13 @@ class LayoutEditorDialog(tk.Toplevel):
     def redraw(self) -> None:
         self.canvas.delete("all")
         w, h = self._geom()
-        pad = 10
+        pad = px(10)
         self.canvas.create_rectangle(
             pad + w * 0.15, pad, pad + w * (self.layout.cols - 0.15), pad + h * 0.72,
             fill=COLOR["podium"], outline=COLOR["podium"])
         self.canvas.create_text(pad + w * self.layout.cols / 2, pad + h * 0.36,
                                 text="讲　台　（前方）", fill="white",
-                                font=("微软雅黑", 10, "bold"))
+                                font=("微软雅黑", 11, "bold"))
         for r in range(self.layout.rows):
             for c in range(self.layout.cols):
                 value = self.layout.get(r, c)
@@ -4134,15 +4393,16 @@ class LayoutEditorDialog(tk.Toplevel):
                     fill, outline, text, fg = COLOR["block"], COLOR["block_border"], "过道", "#5A6B7B"
                 else:
                     fill, outline, text, fg = COLOR["podium"], COLOR["podium"], "讲台", "white"
-                self.canvas.create_rectangle(x0 + 3, y0 + 3, x0 + w - 3, y0 + h - 3,
+                self.canvas.create_rectangle(x0 + px(3), y0 + px(3),
+                                            x0 + w - px(3), y0 + h - px(3),
                                             fill=fill, outline=outline, width=1,
                                             tags=(f"cell{r}_{c}", "cell"))
                 self.canvas.create_text(x0 + w / 2, y0 + h / 2, text=text, fill=fg,
-                                        font=("微软雅黑", 9), tags=(f"txt{r}_{c}", "cell"))
+                                        font=("微软雅黑", 10), tags=(f"txt{r}_{c}", "cell"))
         # 行号
         for r in range(self.layout.rows):
             self.canvas.create_text(pad + w * 0.5, pad + (r + 1.5) * h, text=f"{r + 1}排",
-                                    fill=COLOR["subtext"], font=("微软雅黑", 9))
+                                    fill=COLOR["subtext"], font=("微软雅黑", 10))
         self.canvas.configure(scrollregion=(
             0, 0, pad * 2 + (self.layout.cols + 1.5) * w,
             pad * 2 + (self.layout.rows + 1.5) * h))
@@ -4249,10 +4509,10 @@ class LayoutEditorDialog(tk.Toplevel):
             picker = tk.Toplevel(self)
             picker.title("历史教室模板")
             picker.transient(self)
-            picker.geometry("460x300")
+            picker.geometry(f"{px(460)}x{px(300)}")
             ttk.Label(picker, text="双击模板名即可加载（也可以选择其它 JSON 文件）：",
                       style="Title.TLabel").pack(padx=12, pady=(12, 6), anchor="w")
-            lb = tk.Listbox(picker, font=("微软雅黑", 10))
+            lb = tk.Listbox(picker, font=("微软雅黑", 11))
             for p in paths:
                 lb.insert(tk.END, os.path.basename(p))
             lb.pack(fill=tk.BOTH, expand=True, padx=12, pady=4)
@@ -4315,18 +4575,24 @@ class EvaluationPanel(ttk.Frame):
 
         body = ttk.Frame(self)
         body.pack(fill=tk.BOTH, expand=True, padx=6, pady=(0, 6))
-        left = ttk.Frame(body, width=420)
+        # 柱状图原来是 100 DPI 的位图，高 DPI 屏上放大后字和柱子都发虚。
+        # 这里只给基础值 130：matplotlib 的 Tk 后端会自己按系统缩放把
+        # figure.dpi 再乘一次（150% 屏 → 195 DPI），画布像素 4.6×195≈897，
+        # 正好匹配 px(600) 的容器；若在这里再乘 UI_SCALE 会变成 292 DPI、
+        # 画布 1350 像素被 900 像素的容器裁掉一大半。
+        chart_dpi = 130
+        left = ttk.Frame(body, width=px(600))
         left.pack(side=tk.LEFT, fill=tk.BOTH, expand=False)
         left.pack_propagate(False)
-        self.fig = Figure(figsize=(4.6, 2.5), dpi=100, facecolor="white")
+        self.fig = Figure(figsize=(4.6, 2.2), dpi=chart_dpi, facecolor="white")
         self.ax = self.fig.add_subplot(111)
         self.canvas = FigureCanvasTkAgg(self.fig, master=left)
         self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
         right = ttk.Frame(body)
         right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(8, 0))
-        self.text = tk.Text(right, wrap=tk.WORD, font=("微软雅黑", 10),
-                            bg="#FBFCFD", relief=tk.FLAT, padx=10, pady=8,
+        self.text = tk.Text(right, wrap=tk.WORD, font=("微软雅黑", 11),
+                            bg="#FBFCFD", relief=tk.FLAT, padx=px(10), pady=px(8),
                             foreground=COLOR["text"])
         sb = ttk.Scrollbar(right, orient=tk.VERTICAL, command=self.text.yview)
         self.text.configure(yscrollcommand=sb.set)
@@ -4386,7 +4652,7 @@ class EvaluationPanel(ttk.Frame):
         self.caption.configure(text=f"当前：{plan.name}｜区最大差 {st['max_diff']:.1f} 分")
 
 ==============================================================================
-【文件 11/13】src/selfcheck.py　（220 行）
+【文件 12/14】src/selfcheck.py　（242 行）
 ==============================================================================
 # -*- coding: utf-8 -*-
 """
@@ -4417,7 +4683,7 @@ from models import COLOR
 from seating import SeatingOptions, generate_plans, apply_swap
 from evaluate import attach_stats
 from exporter import (export_seating_excel, export_canvas_png, export_report_xlsx,
-                      build_seat_figure, png_columns)
+                      build_seat_figure, png_columns, png_aisle_columns)
 
 
 def make_dirty_excel(path: str) -> None:
@@ -4561,6 +4827,15 @@ def main() -> int:
         assert os.path.isfile(p) and os.path.getsize(p) > 1000, f"导出文件异常：{p}"
         print(f"[7] 导出成功：{os.path.basename(p)}（{os.path.getsize(p):,} 字节）")
 
+    # 回归检查 ③：PNG 必须是打印级分辨率，不能退回 180 DPI 的糊图
+    from PIL import Image
+    from exporter import FIGURE_DPI, PNG_DPI
+    assert PNG_DPI >= 300 and FIGURE_DPI >= 200, "座位图渲染 / 输出 DPI 被调低了"
+    with Image.open(png) as im:
+        pw, ph = im.size
+    assert pw >= 1800, f"座位图像素宽度不足，打印会发虚：{pw} px"
+    print(f"[7b] PNG 分辨率：{pw} × {ph} 像素（画布 {FIGURE_DPI} / 输出 {PNG_DPI} DPI）")
+
     # 回归检查 ①：空位不能夹在学生中间。
     # 已入座座位必须恰好是「从前往后、从左到右」的前 N 个座位。
     seat_order = layout.seats()
@@ -4571,10 +4846,15 @@ def main() -> int:
     print("[8] 空位检查：所有方案的空位都集中在最后几排末尾，没有夹在学生中间")
 
     # 回归检查 ②：PNG 只含座位信息，且不给家长看老师内部标记。
-    # 过道列整列删除，所以文字数 = 1 讲台 + 排号 + 保留列里的座位数。
+    # 过道列按原始位置留出空白（不画框、不写字），所以文字数仍是
+    # 1 讲台 + 排号 + 座位数；同时要断言过道列真的没有任何方格 / 姓名。
+    import math
     import matplotlib.pyplot as plt
     from matplotlib.colors import to_rgba
     draw_cols = png_columns(layout)
+    aisle_cols = png_aisle_columns(layout)
+    assert len(draw_cols) == layout.cols, "PNG 又把过道列压缩掉了"
+    assert aisle_cols, "自检布局应至少有一条过道，无法验证留白"
     cells = sum(1 for r in range(layout.rows) for c in draw_cols
                 if layout.get(r, c) == SEAT)
     expected_texts = 1 + layout.rows + cells
@@ -4583,6 +4863,13 @@ def main() -> int:
     assert len(ax.texts) == expected_texts, (
         f"PNG 文字数量异常：应有 {expected_texts} 处，实际 {len(ax.texts)} 处")
     assert len(ax.patches) == 1 + cells, "PNG 多画了非座位方格（过道方框？）"
+    # patches[0] 是讲台横条，其余全部是座位方格；方格中心所在的列不能是过道列
+    seat_x = [math.floor(p.get_x() + p.get_width() / 2) for p in ax.patches[1:]]
+    assert all(x not in aisle_cols for x in seat_x), "过道列被画上了座位方格"
+    # 姓名 / 排号文字也一样；讲台横条上的「讲　台」两字居中，不计入
+    text_x = [math.floor(t.get_position()[0]) for t in ax.texts
+              if t.get_text() != "讲　台"]
+    assert all(x not in aisle_cols for x in text_x), "过道列被写上了文字"
     forbidden = ("过道", "图例", "浅红", "导出时间", "座位示意图", "前排",
                  "重点关注", "普通学生", "行×", "重点", "视力", "学困", "讲台格")
     extra = [t.get_text() for t in ax.texts
@@ -4592,7 +4879,8 @@ def main() -> int:
     assert not any(to_rgba(patch.get_facecolor()) == focus_rgba
                    for patch in ax.patches), "PNG 仍用浅红底泄露重点关注学生"
     plt.close(fig)
-    print(f"[9] PNG 内容检查：{cells} 个座位方格（过道列已整列删除）、"
+    print(f"[9] PNG 内容检查：{cells} 个座位方格（第 "
+          f"{'、'.join(str(c + 1) for c in aisle_cols)} 列过道整列留白）、"
           "无过道方框、无标题图例、无重点关注标记（颜色与文字都没有）")
 
     print("\n✅ 全部自检通过：导入容错、预览编辑、5 套差异化方案、评估、三种导出均正常。")
@@ -4610,7 +4898,7 @@ if __name__ == "__main__":
         sys.exit(1)
 
 ==============================================================================
-【文件 12/13】requirements.txt　（11 行）
+【文件 13/14】requirements.txt　（11 行）
 ==============================================================================
 # 智能学生排座位系统 · 运行依赖
 # 安装： pip install -r requirements.txt
@@ -4625,7 +4913,7 @@ matplotlib>=3.7
 Pillow>=10.0
 
 ==============================================================================
-【文件 13/13】启动.bat　（17 行）
+【文件 14/14】启动.bat　（17 行）
 ==============================================================================
 @echo off
 title 智能学生排座位系统
@@ -4646,6 +4934,6 @@ if errorlevel 1 (
 )
 
 ==============================================================================
-合计 13 个文件、约 4586 行（含注释）。
+合计 14 个文件、约 4870 行（含注释）。
 依赖安装：pip install -r requirements.txt
 ==============================================================================

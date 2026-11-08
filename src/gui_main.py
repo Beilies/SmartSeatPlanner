@@ -34,6 +34,7 @@ from models import COLOR, Student, WarningItem
 from seating import (Plan, SeatingOptions, apply_swap, generate_plans)
 
 from app_paths import BASE_DIR, asset_path
+from ui_scale import apply_tk_scaling, minimum_size, px, window_size
 
 
 # ======================================================================
@@ -42,7 +43,9 @@ from app_paths import BASE_DIR, asset_path
 class SeatBoard(ttk.Frame):
     """彩色方格座位图：悬浮提示、拖拽换座、撤销、缩放。"""
 
-    BASE_W, BASE_H = 118, 66
+    # 设计稿是 96 DPI 下的逻辑像素；高 DPI 屏按系统缩放放大，
+    # 否则字体被 Tk 放大后，格子还是原来那么大，姓名会挤成一团。
+    BASE_W, BASE_H = px(118), px(66)
 
     def __init__(self, master, on_change=None, on_status=None):
         super().__init__(master)
@@ -56,7 +59,7 @@ class SeatBoard(ttk.Frame):
         self.drag: Optional[dict] = None
         self.hover_pos: Optional[Pos] = None
         self.tip_job: Optional[str] = None
-        self.pad = 16
+        self.pad = px(16)
 
         # ---- 工具栏 ----
         bar = ttk.Frame(self)
@@ -96,7 +99,7 @@ class SeatBoard(ttk.Frame):
         self.tip.wm_overrideredirect(True)
         self.tip.withdraw()
         self.tip_label = tk.Label(self.tip, justify=tk.LEFT, anchor="w",
-                                  font=("微软雅黑", 10), bg="#FFFDF0", fg=COLOR["text"],
+                                  font=("微软雅黑", 11), bg="#FFFDF0", fg=COLOR["text"],
                                   relief=tk.SOLID, bd=1, padx=10, pady=7)
         self.tip_label.pack()
         self.menu = tk.Menu(self, tearoff=0)
@@ -141,9 +144,9 @@ class SeatBoard(ttk.Frame):
                                          "③ 调好参数，点「生成座位方案」，这里就会出现彩色座位图\n"
                                          "④ 直接拖动方格换座，下方图表会实时更新\n\n"
                                          "浅红=重点关注　白色=普通学生　灰色=过道/禁用",
-                                    font=("微软雅黑", 13), fill=COLOR["subtext"],
+                                    font=("微软雅黑", 14), fill=COLOR["subtext"],
                                     justify=tk.LEFT)
-            self.canvas.configure(scrollregion=(0, 0, 900, 500))
+            self.canvas.configure(scrollregion=(0, 0, px(900), px(500)))
             return
 
         # 讲台横条
@@ -152,11 +155,11 @@ class SeatBoard(ttk.Frame):
                                      fill=COLOR["podium"], outline=COLOR["podium"])
         self.canvas.create_text(pad + w * cols / 2, pad + h * 0.37,
                                 text="讲　台　（前方）", fill="white",
-                                font=("微软雅黑", max(9, int(11 * self.scale)), "bold"))
+                                font=("微软雅黑", max(10, int(12 * self.scale)), "bold"))
 
-        name_font = ("微软雅黑", max(8, int(11 * self.scale)), "bold")
-        tag_font = ("微软雅黑", max(7, int(9 * self.scale)))
-        small_font = ("微软雅黑", max(7, int(9 * self.scale)))
+        name_font = ("微软雅黑", max(9, int(12 * self.scale)), "bold")
+        tag_font = ("微软雅黑", max(8, int(10 * self.scale)))
+        small_font = ("微软雅黑", max(8, int(10 * self.scale)))
 
         for r in range(rows):
             y0 = pad + (r + 1) * h
@@ -298,7 +301,7 @@ class SeatBoard(ttk.Frame):
                                      fill=COLOR["ghost"], outline="#C79A20",
                                      width=2, tags="ghost")
         self.canvas.create_text(x, y, text=stu.name if stu else "空位",
-                                font=("微软雅黑", max(8, int(10 * self.scale)), "bold"),
+                                font=("微软雅黑", max(9, int(11 * self.scale)), "bold"),
                                 fill=COLOR["text"], tags="ghost")
         # 高亮即将放下的目标格
         target = self._pos_at(event.x, event.y)
@@ -408,9 +411,15 @@ class MainWindow(tk.Tk):
 
     def __init__(self):
         super().__init__()
+        # 必须在创建任何控件之前：Tk 会按真实 DPI 重新光栅化所有点数字体，
+        # 文字不再是「96 DPI 位图被 Windows 拉伸」的模糊效果。
+        apply_tk_scaling(self)
         self.title("智能学生排座位系统　｜　made by Beilies")
-        self.geometry("1380x880")
-        self.minsize(1080, 680)
+        w, h = window_size(self, 1380, 880)
+        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+        x, y = max(0, (sw - w) // 2 - 20), max(0, (sh - h) // 2 - 40)
+        self.geometry(f"{w}x{h}+{x}+{y}")
+        self.minsize(*minimum_size(self, 1080, 680))
         setup_style(self)
         self._setup_icon()          # 老师设计的图标：标题栏 / 任务栏 / 面板左上角
         self.report_callback_exception = self._tk_exception
@@ -474,19 +483,19 @@ class MainWindow(tk.Tk):
     # ------------------------------------------------------------------
     def _build_left(self) -> None:
         """左侧控制面板（可滚动，小窗口也不会挤掉按钮）。"""
-        outer = ttk.Frame(self, width=326)
-        outer.grid(row=0, column=0, sticky="nsew", padx=(8, 4), pady=8)
+        outer = ttk.Frame(self, width=px(326))
+        outer.grid(row=0, column=0, sticky="nsew", padx=(px(8), px(4)), pady=px(8))
         outer.pack_propagate(False)
-        # 把「滚一格」固定成 20 像素：Tk 默认一格 = 窗口高度的 1/10，
-        # 大屏上一滚就跳一大截，小屏上又几乎不动，手感很差。
-        canvas = tk.Canvas(outer, highlightthickness=0, width=310,
-                           yscrollincrement=20)
+        # 把「滚一格」固定成 20 逻辑像素（高 DPI 下同步放大）：Tk 默认一格 =
+        # 窗口高度的 1/10，大屏上一滚就跳一大截，小屏上又几乎不动。
+        canvas = tk.Canvas(outer, highlightthickness=0, width=px(310),
+                           yscrollincrement=px(20))
         scroll = ttk.Scrollbar(outer, orient=tk.VERTICAL, command=canvas.yview)
         canvas.configure(yscrollcommand=scroll.set)
         canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scroll.pack(side=tk.RIGHT, fill=tk.Y)
         panel = ttk.Frame(canvas)
-        canvas.create_window((0, 0), window=panel, anchor="nw", width=306)
+        canvas.create_window((0, 0), window=panel, anchor="nw", width=px(306))
         panel.bind("<Configure>",
                    lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
         # 供滚轮绑定和 --diagnose 回归检查使用
@@ -503,8 +512,8 @@ class MainWindow(tk.Tk):
                   style="Title.TLabel").pack(side=tk.LEFT)
         # 给老师一句明确提示：这块面板是可以往下滚的
         ttk.Label(panel, text="鼠标滚轮可上下滚动本面板",
-                  style="Hint.TLabel", wraplength=270).pack(anchor="w", pady=(0, 6))
-        self.columnconfigure(0, weight=0, minsize=330)
+                  style="Hint.TLabel", wraplength=px(270)).pack(anchor="w", pady=(0, 6))
+        self.columnconfigure(0, weight=0, minsize=px(330))
         self.rowconfigure(0, weight=1)
         self.columnconfigure(1, weight=1)
 
@@ -516,7 +525,7 @@ class MainWindow(tk.Tk):
         ttk.Button(box, text="下载标准 Excel 模板",
                    command=self._download_template).pack(fill=tk.X, pady=2)
         ttk.Label(box, textvariable=self.var_students, style="Hint.TLabel",
-                  wraplength=270).pack(anchor="w", pady=(4, 0))
+                  wraplength=px(270)).pack(anchor="w", pady=(4, 0))
 
         # ② 教室布局
         box = ttk.LabelFrame(panel, text="② 教室布局", style="Card.TLabelframe")
@@ -524,7 +533,7 @@ class MainWindow(tk.Tk):
         ttk.Button(box, text="打开可视化布局编辑器",
                    command=self._open_layout).pack(fill=tk.X, pady=2)
         ttk.Label(box, textvariable=self.var_layout, style="Hint.TLabel",
-                  wraplength=270).pack(anchor="w", pady=(4, 0))
+                  wraplength=px(270)).pack(anchor="w", pady=(4, 0))
 
         # ③ 排座参数
         box = ttk.LabelFrame(panel, text="③ 排座参数", style="Card.TLabelframe")
@@ -562,7 +571,7 @@ class MainWindow(tk.Tk):
         ttk.Button(nav, text="← 上一套", command=self._prev_plan).pack(side=tk.LEFT, expand=True, fill=tk.X)
         ttk.Button(nav, text="下一套 →", command=self._next_plan).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=4)
         ttk.Label(box, textvariable=self.var_desc, style="Hint.TLabel",
-                  wraplength=270).pack(anchor="w", pady=(6, 0))
+                  wraplength=px(270)).pack(anchor="w", pady=(6, 0))
 
         # ⑤ 导出
         box = ttk.LabelFrame(panel, text="⑤ 导出", style="Card.TLabelframe")
@@ -586,7 +595,7 @@ class MainWindow(tk.Tk):
 
         # 状态栏
         ttk.Label(panel, textvariable=self.var_status, style="Hint.TLabel",
-                  wraplength=270, foreground="#24527A").pack(anchor="w", pady=(10, 4))
+                  wraplength=px(270), foreground="#24527A").pack(anchor="w", pady=(10, 4))
 
         # 所有子控件都建好之后，再统一绑定滚轮（详见方法内说明）
         self._bind_panel_wheel()
@@ -892,8 +901,8 @@ class MainWindow(tk.Tk):
             return
         saved = export_canvas_png(path, plan, self.layout)
         messagebox.showinfo("导出成功", f"座位图已保存为图片：\n{saved}\n\n"
-                            "图片只含讲台、排号和姓名方格：过道方框已去掉，"
-                            "也不含重点关注标记、标题、图例、导出时间，"
+                            "图片只含讲台、排号和姓名方格：过道位置已留出空白，"
+                            "不画过道方框，也不含重点关注标记、标题、图例、导出时间，"
                             "可直接发家长群或打印张贴。",
                             parent=self)
         self.set_status(f"已导出 PNG 座位图：{os.path.basename(saved)}")
@@ -948,8 +957,9 @@ class MainWindow(tk.Tk):
             "调座位：直接用鼠标左键把学生方格拖到另一个方格（或空位）即可交换；Ctrl+Z 或"
             "「撤销换座」按钮可悔棋；鼠标悬浮可看学号、总分、标签、禁止同桌对象；Ctrl+滚轮缩放。",
             "导出：Excel 座位表（名单 + 彩色座位示意图）、PNG 座位图、方案统计报表。"
-            "PNG 是给家长看的：只画讲台、排号和姓名方格，过道方框整列删除，"
-            "不显示重点关注标记（浅红底色也不显示），空位统一留在最后几排；"
+            "PNG 是给家长看的：只画讲台、排号和姓名方格，过道按原位置留白"
+            "（不画方框、不写「过道」），不显示重点关注标记（浅红底色也不显示），"
+            "空位统一留在最后几排；"
             "老师自己在主界面画布上仍能看到浅红标记和灰色过道。",
             "依赖：Python 官方安装包自带 tkinter；另需 pandas、openpyxl、xlrd、matplotlib，"
             "安装命令见根目录 requirements.txt；完整教程在 docs/使用说明.md。",

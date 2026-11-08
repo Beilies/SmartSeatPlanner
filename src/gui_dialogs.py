@@ -38,6 +38,7 @@ from models import COLOR, WarningItem, Student
 from seating import Plan
 
 from app_paths import BASE_DIR, LOG_FILENAME
+from ui_scale import px
 LOG_FILE = os.path.join(BASE_DIR, LOG_FILENAME)
 
 
@@ -45,20 +46,26 @@ LOG_FILE = os.path.join(BASE_DIR, LOG_FILENAME)
 # 通用工具
 # ----------------------------------------------------------------------
 def setup_style(root: tk.Misc) -> None:
-    """统一窗口外观（浅色主题、微软雅黑、稍大的控件间距）。"""
+    """统一窗口外观（浅色主题、微软雅黑、稍大的控件间距与字号）。
+
+    字号用「点」：Tk 已按真实 DPI 设置 scaling，11pt 在 150% 屏上会自动
+    变成约 22 物理像素，笔画重新光栅化，不会是拉伸后的模糊字。
+    行高 / 内边距用「像素」，必须用 px() 同步放大，否则字大框小。
+    基础字号整体提了 1pt（10→11、9→10），100% DPI 的屏幕也更清楚。
+    """
     try:
         style = ttk.Style(root)
         if "clam" in style.theme_names():
             style.theme_use("clam")
-        style.configure(".", font=("微软雅黑", 10))
-        style.configure("TButton", padding=(8, 5), font=("微软雅黑", 10))
-        style.configure("Title.TLabel", font=("微软雅黑", 12, "bold"), foreground="#1F2933")
-        style.configure("Hint.TLabel", font=("微软雅黑", 9), foreground=COLOR["subtext"])
-        style.configure("Card.TLabelframe", padding=8)
-        style.configure("Card.TLabelframe.Label", font=("微软雅黑", 10, "bold"),
+        style.configure(".", font=("微软雅黑", 11))
+        style.configure("TButton", padding=(px(9), px(6)), font=("微软雅黑", 11))
+        style.configure("Title.TLabel", font=("微软雅黑", 13, "bold"), foreground="#1F2933")
+        style.configure("Hint.TLabel", font=("微软雅黑", 11), foreground=COLOR["subtext"])
+        style.configure("Card.TLabelframe", padding=px(8))
+        style.configure("Card.TLabelframe.Label", font=("微软雅黑", 11, "bold"),
                         foreground="#2C5282")
-        style.configure("Treeview", rowheight=25, font=("微软雅黑", 10))
-        style.configure("Treeview.Heading", font=("微软雅黑", 10, "bold"))
+        style.configure("Treeview", rowheight=px(28), font=("微软雅黑", 11))
+        style.configure("Treeview.Heading", font=("微软雅黑", 11, "bold"))
         style.configure("Accent.TButton", foreground="#FFFFFF", background="#4472C4")
         style.map("Accent.TButton", background=[("active", "#3559A0")])
     except Exception:
@@ -79,11 +86,15 @@ def fit_dialog(win, pref_w: int, pref_h: int,
     不足时会被裁掉。所以调用方必须先 pack(side=tk.BOTTOM) 按钮区，
     再 pack 可伸缩的表格/画布，让空间不够时优先压缩内容区而不是按钮。
     """
+    # 设计稿按 96 DPI 写死，高 DPI 屏上要同步放大；否则按钮文字变大了、
+    # 窗口却还是原来那么小，底部确认按钮又会被挤出去。
+    pref_w, pref_h = px(pref_w), px(pref_h)
+    min_w, min_h = px(min_w), px(min_h)
     try:
         win.update_idletasks()
         sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
-        avail_w = max(560, sw - 80)       # 左右留边
-        avail_h = max(340, sh - 100)      # 上下留任务栏 / 标题栏 / 边框
+        avail_w = max(px(560), sw - px(80))       # 左右留边
+        avail_h = max(px(340), sh - px(100))      # 上下留任务栏 / 标题栏 / 边框
         w = min(pref_w, avail_w)
         h = min(pref_h, avail_h)
         win.minsize(min(min_w, avail_w), min(min_h, avail_h))
@@ -156,7 +167,7 @@ def show_info_list(parent, title: str, lines: List[str], subtitle: str = "") -> 
         side=tk.TOP, padx=14, pady=(12, 6), anchor="w")
     frame = ttk.Frame(win)
     frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=14, pady=6)
-    text = tk.Text(frame, wrap=tk.WORD, font=("微软雅黑", 10), bg="#FBFCFD",
+    text = tk.Text(frame, wrap=tk.WORD, font=("微软雅黑", 11), bg="#FBFCFD",
                    relief=tk.FLAT, padx=8, pady=8)
     sb = ttk.Scrollbar(frame, orient=tk.VERTICAL, command=text.yview)
     text.configure(yscrollcommand=sb.set)
@@ -193,7 +204,7 @@ class SheetChoiceDialog(tk.Toplevel):
         ttk.Label(self, text="这个 Excel 里有多个工作表，请选择要导入的那一个：",
                   style="Title.TLabel").pack(side=tk.TOP, padx=16, pady=(14, 8), anchor="w")
         self.listbox = tk.Listbox(self, height=min(10, max(4, len(sheets))),
-                                  font=("微软雅黑", 11), activestyle="dotbox")
+                                  font=("微软雅黑", 12), activestyle="dotbox")
         for s in sheets:
             self.listbox.insert(tk.END, s)
         self.listbox.selection_set(0)
@@ -265,7 +276,7 @@ class EditableTable(ttk.Frame):
         x, y, w, h = self.tree.bbox(row_id, col_id)
         column_key = self.columns[idx]
         value = self.tree.set(row_id, column_key)
-        editor = ttk.Entry(self.tree, font=("微软雅黑", 10))
+        editor = ttk.Entry(self.tree, font=("微软雅黑", 11))
         editor.place(x=x, y=y, width=w, height=h)
         editor.insert(0, value)
         editor.select_range(0, tk.END)
@@ -366,8 +377,8 @@ class ImportPreviewDialog(tk.Toplevel):
                                       show="headings", height=5)
         self.warn_tree.heading("kind", text="类别")
         self.warn_tree.heading("detail", text="说明")
-        self.warn_tree.column("kind", width=110, anchor=tk.CENTER, stretch=False)
-        self.warn_tree.column("detail", width=700, anchor=tk.W)
+        self.warn_tree.column("kind", width=px(110), anchor=tk.CENTER, stretch=False)
+        self.warn_tree.column("detail", width=px(700), anchor=tk.W)
         warn_scroll = ttk.Scrollbar(warn_box, orient=tk.VERTICAL, command=self.warn_tree.yview)
         self.warn_tree.configure(yscrollcommand=warn_scroll.set)
         self.warn_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(4, 0), pady=4)
@@ -471,7 +482,7 @@ class LayoutEditorDialog(tk.Toplevel):
         self.layout = ClassroomLayout.from_dict(layout.to_dict())
         self.brush = tk.StringVar(value=SEAT)
         self.zoom = tk.DoubleVar(value=1.0)
-        self.cell_w, self.cell_h = 72, 48
+        self.cell_w, self.cell_h = px(72), px(48)
         self.drag_start: Optional[tuple] = None
         self.drag_button = 1
         self.drag_moved = False
@@ -562,13 +573,13 @@ class LayoutEditorDialog(tk.Toplevel):
     def redraw(self) -> None:
         self.canvas.delete("all")
         w, h = self._geom()
-        pad = 10
+        pad = px(10)
         self.canvas.create_rectangle(
             pad + w * 0.15, pad, pad + w * (self.layout.cols - 0.15), pad + h * 0.72,
             fill=COLOR["podium"], outline=COLOR["podium"])
         self.canvas.create_text(pad + w * self.layout.cols / 2, pad + h * 0.36,
                                 text="讲　台　（前方）", fill="white",
-                                font=("微软雅黑", 10, "bold"))
+                                font=("微软雅黑", 11, "bold"))
         for r in range(self.layout.rows):
             for c in range(self.layout.cols):
                 value = self.layout.get(r, c)
@@ -580,15 +591,16 @@ class LayoutEditorDialog(tk.Toplevel):
                     fill, outline, text, fg = COLOR["block"], COLOR["block_border"], "过道", "#5A6B7B"
                 else:
                     fill, outline, text, fg = COLOR["podium"], COLOR["podium"], "讲台", "white"
-                self.canvas.create_rectangle(x0 + 3, y0 + 3, x0 + w - 3, y0 + h - 3,
+                self.canvas.create_rectangle(x0 + px(3), y0 + px(3),
+                                            x0 + w - px(3), y0 + h - px(3),
                                             fill=fill, outline=outline, width=1,
                                             tags=(f"cell{r}_{c}", "cell"))
                 self.canvas.create_text(x0 + w / 2, y0 + h / 2, text=text, fill=fg,
-                                        font=("微软雅黑", 9), tags=(f"txt{r}_{c}", "cell"))
+                                        font=("微软雅黑", 10), tags=(f"txt{r}_{c}", "cell"))
         # 行号
         for r in range(self.layout.rows):
             self.canvas.create_text(pad + w * 0.5, pad + (r + 1.5) * h, text=f"{r + 1}排",
-                                    fill=COLOR["subtext"], font=("微软雅黑", 9))
+                                    fill=COLOR["subtext"], font=("微软雅黑", 10))
         self.canvas.configure(scrollregion=(
             0, 0, pad * 2 + (self.layout.cols + 1.5) * w,
             pad * 2 + (self.layout.rows + 1.5) * h))
@@ -695,10 +707,10 @@ class LayoutEditorDialog(tk.Toplevel):
             picker = tk.Toplevel(self)
             picker.title("历史教室模板")
             picker.transient(self)
-            picker.geometry("460x300")
+            picker.geometry(f"{px(460)}x{px(300)}")
             ttk.Label(picker, text="双击模板名即可加载（也可以选择其它 JSON 文件）：",
                       style="Title.TLabel").pack(padx=12, pady=(12, 6), anchor="w")
-            lb = tk.Listbox(picker, font=("微软雅黑", 10))
+            lb = tk.Listbox(picker, font=("微软雅黑", 11))
             for p in paths:
                 lb.insert(tk.END, os.path.basename(p))
             lb.pack(fill=tk.BOTH, expand=True, padx=12, pady=4)
@@ -761,18 +773,24 @@ class EvaluationPanel(ttk.Frame):
 
         body = ttk.Frame(self)
         body.pack(fill=tk.BOTH, expand=True, padx=6, pady=(0, 6))
-        left = ttk.Frame(body, width=420)
+        # 柱状图原来是 100 DPI 的位图，高 DPI 屏上放大后字和柱子都发虚。
+        # 这里只给基础值 130：matplotlib 的 Tk 后端会自己按系统缩放把
+        # figure.dpi 再乘一次（150% 屏 → 195 DPI），画布像素 4.6×195≈897，
+        # 正好匹配 px(600) 的容器；若在这里再乘 UI_SCALE 会变成 292 DPI、
+        # 画布 1350 像素被 900 像素的容器裁掉一大半。
+        chart_dpi = 130
+        left = ttk.Frame(body, width=px(600))
         left.pack(side=tk.LEFT, fill=tk.BOTH, expand=False)
         left.pack_propagate(False)
-        self.fig = Figure(figsize=(4.6, 2.5), dpi=100, facecolor="white")
+        self.fig = Figure(figsize=(4.6, 2.2), dpi=chart_dpi, facecolor="white")
         self.ax = self.fig.add_subplot(111)
         self.canvas = FigureCanvasTkAgg(self.fig, master=left)
         self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
         right = ttk.Frame(body)
         right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(8, 0))
-        self.text = tk.Text(right, wrap=tk.WORD, font=("微软雅黑", 10),
-                            bg="#FBFCFD", relief=tk.FLAT, padx=10, pady=8,
+        self.text = tk.Text(right, wrap=tk.WORD, font=("微软雅黑", 11),
+                            bg="#FBFCFD", relief=tk.FLAT, padx=px(10), pady=px(8),
                             foreground=COLOR["text"])
         sb = ttk.Scrollbar(right, orient=tk.VERTICAL, command=self.text.yview)
         self.text.configure(yscrollcommand=sb.set)

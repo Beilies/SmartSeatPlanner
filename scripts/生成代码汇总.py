@@ -18,6 +18,7 @@ SEP = "=" * 78
 FILES = [
     ("src/main.py", "main.py"),
     ("src/app_paths.py", "app_paths.py"),
+    ("src/ui_scale.py", "ui_scale.py"),
     ("src/models.py", "models.py"),
     ("src/excel_io.py", "excel_io.py"),
     ("src/layout.py", "layout.py"),

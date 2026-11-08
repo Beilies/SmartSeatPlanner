@@ -4,7 +4,8 @@
 ------------------------------------------------------------------
 1. 导出 Excel 座位表：名单 Sheet + 座位示意图 Sheet（带颜色，可直接打印）
 2. 导出座位画布为 PNG 图片：用 matplotlib 重绘，只含座位信息（讲台 / 排号 / 座位方格），
-   不含标题、图例、行列数、导出时间、特殊标记小字等任何附加说明，方便直接打印 / 发家长群
+   不含标题、图例、行列数、导出时间、特殊标记小字等任何附加说明；
+   过道按原始位置留白（不画方框、不写字），方便直接打印 / 发家长群
 3. 导出方案统计报表：多方案横向对比 + 分区分布 + 提示与冲突
 
 所有函数失败时抛 ExportError，由 GUI 转成中文弹窗。
@@ -35,6 +36,12 @@ class ExportError(Exception):
     """导出失败（权限、文件被占用、缺字体等），GUI 会友好提示。"""
 
 
+# 座位图是给家长看 / 打印张贴的，光栅化分辨率不能省：
+# 180 DPI 放大到 A4 时笔画会发虚，统一按 300 DPI 输出。
+FIGURE_DPI = 200                  # 画布内部渲染分辨率
+PNG_DPI = 300                     # savefig 输出分辨率（打印级）
+
+
 # ----------------------------------------------------------------------
 # 中文字体（Windows 一般有微软雅黑 / 黑体；找不到时降级，不会崩溃）
 # ----------------------------------------------------------------------
@@ -50,6 +57,10 @@ def setup_chinese_font() -> str:
     chosen = next((n for n in candidates if n in available), "DejaVu Sans")
     plt.rcParams["font.sans-serif"] = [chosen, "DejaVu Sans"]
     plt.rcParams["axes.unicode_minus"] = False
+    # 高分辨率渲染 + 字体抗锯齿：文字笔画不再是一圈糊边
+    plt.rcParams["figure.dpi"] = FIGURE_DPI
+    plt.rcParams["savefig.dpi"] = PNG_DPI
+    plt.rcParams["text.antialiased"] = True
     return chosen
 
 
@@ -213,20 +224,27 @@ def export_seating_excel(path: str, plan: Plan, layout: ClassroomLayout,
 #   · 学生姓名方格，以及末尾几个「空位」方格
 # 刻意不画的「其它信息」：
 #   · 方案标题、颜色图例、行列数、前排说明、导出时间
-#   · 过道 / 讲台格：整列删掉，不画灰色方框、不写「过道」、也不留空白列
+#   · 过道 / 禁用格：按原始列位置空出来（不画灰色方框、不写「过道」），
+#     座位之间自然出现空白纵向通道，家长一眼能看出教室的真实布局
 #   · 老师对学生的重点关照信息：不写「重点关注 / 视力 / 学困」等小字，
 #     也不再用浅红底色区分——所有学生方格一律白色，家长看到的是同一张表
 # 【注意】主界面画布仍保留浅红标记与灰色过道（老师排座时需要看），
 #         只在这个「对外导出」的函数里做脱敏与简化；Excel 座位表也仍保留教师信息。
 # ----------------------------------------------------------------------
 def png_columns(layout: ClassroomLayout) -> List[int]:
-    """返回 PNG 要画的原始列号：整列都是过道/讲台的列直接删掉。
+    """返回 PNG 网格保留的原始列号：**全部列，含过道列**。
 
-    以「列」为单位压缩而不是逐格压缩，保证每一行仍然对齐；
-    个别行里的过道格（其所在列其它行仍有座位）跳过不画即可。
+    早期版本会把整列过道压缩删掉，结果三段座位紧挨在一起、看不出通道；
+    现在按原始列号排布，过道列照常占一格宽度但完全留白（画座位时跳过非 SEAT 格），
+    既不留灰色方框，也不会把教室布局挤变形。
     """
+    return list(range(layout.cols))
+
+
+def png_aisle_columns(layout: ClassroomLayout) -> List[int]:
+    """返回 PNG 中应当整列留白的原始列号（自检 / 测试用它做回归断言）。"""
     return [c for c in range(layout.cols)
-            if any(layout.get(r, c) == SEAT for r in range(layout.rows))]
+            if all(layout.get(r, c) != SEAT for r in range(layout.rows))]
 
 
 def build_seat_figure(plan: Plan, layout: ClassroomLayout):
@@ -238,10 +256,10 @@ def build_seat_figure(plan: Plan, layout: ClassroomLayout):
     rows = layout.rows
     draw_cols = png_columns(layout)
     out_cols = max(1, len(draw_cols))              # 极端容错：全无座位也不让坐标崩
-    # 没有标题、页脚、过道列了，画布按实际网格收紧，避免大片空白
+    # 没有标题、页脚，画布按实际网格收紧；过道列也算进宽度，用来留白
     fig_w = max(8.0, out_cols * 1.18 + 0.9)
     fig_h = max(4.0, rows * 0.78 + 1.15)
-    fig, ax = plt.subplots(figsize=(fig_w, fig_h), dpi=180)
+    fig, ax = plt.subplots(figsize=(fig_w, fig_h), dpi=FIGURE_DPI)
     fig.patch.set_facecolor("white")
     # 坐标紧贴内容：左边留一点给排号，上边留给讲台，下边不再留页脚空间
     ax.set_xlim(-0.60, out_cols + 0.10)
@@ -250,13 +268,16 @@ def build_seat_figure(plan: Plan, layout: ClassroomLayout):
     ax.axis("off")
     fig.subplots_adjust(left=0.01, right=0.99, bottom=0.01, top=0.99)
 
-    # 讲台横条（属于座位方位信息，保留），居中于压缩后的座位网格
+    # 讲台横条（属于座位方位信息，保留），居中于整个座位网格
     ax.add_patch(Rectangle((out_cols / 2 - 1.35, rows + 0.32), 2.7, 0.6,
                           facecolor=COLOR["podium"], edgecolor=COLOR["podium"]))
     ax.text(out_cols / 2, rows + 0.62, "讲　台", ha="center", va="center",
             fontsize=13, color="white", fontweight="bold")
 
-    name_size = 11 if out_cols <= 10 else 9
+    # 字号按「一行实际有多少个座位」决定，过道列变多也不该把姓名挤小
+    seat_per_row = max((sum(1 for c in draw_cols if layout.get(r, c) == SEAT)
+                        for r in range(rows)), default=1)
+    name_size = 11 if seat_per_row <= 10 else 9
     for r in range(rows):
         y = rows - 1 - r                           # 第 0 排画在最上方
         # 排号：帮助老师/家长定位第几排，属于座位信息
@@ -264,7 +285,7 @@ def build_seat_figure(plan: Plan, layout: ClassroomLayout):
                 fontsize=9, color=COLOR["subtext"])
         for x, c in enumerate(draw_cols):
             if layout.get(r, c) != SEAT:
-                continue                           # 过道 / 讲台格：不画框、不写字
+                continue                           # 过道 / 禁用格：整格留白，不画框、不写字
             stu = plan.assignment.get((r, c))
             if stu is None:
                 fill, border = COLOR["empty"], COLOR["empty_border"]
@@ -290,7 +311,7 @@ def export_canvas_png(path: str, plan: Plan, layout: ClassroomLayout) -> str:
         if folder:
             os.makedirs(folder, exist_ok=True)
         # tight + 很小的留白：图片边缘干净，打印不会被裁到字
-        fig.savefig(path, dpi=180, bbox_inches="tight", pad_inches=0.06,
+        fig.savefig(path, dpi=PNG_DPI, bbox_inches="tight", pad_inches=0.06,
                     facecolor="white")
         plt.close(fig)
         return path
